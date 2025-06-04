@@ -1,7 +1,11 @@
 package com.code_space.code_space.controller;
 
+import com.code_space.code_space.service.UserService;
+import com.code_space.code_space.entity.Room;
+import com.code_space.code_space.entity.User;
 import com.code_space.code_space.dto.*;
 import com.code_space.code_space.service.RoomService;
+import com.code_space.code_space.service.RoomParticipantService; // ADD THIS IMPORT
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.Parameter;
 import io.swagger.v3.oas.annotations.responses.ApiResponse;
@@ -31,6 +35,12 @@ public class RoomController {
 
     @Autowired
     private RoomService roomService;
+
+    @Autowired
+    private UserService userService;
+
+    @Autowired
+    private RoomParticipantService participantService;
 
     @PostMapping
     @Operation(
@@ -539,6 +549,198 @@ public class RoomController {
             );
 
             return ResponseEntity.ok(statistics);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest()
+                    .body(new MessageResponse("Error: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{roomId}/recording/start")
+    @Operation(
+            summary = "Start meeting recording",
+            description = "Start recording the meeting (host only)",
+            security = @SecurityRequirement(name = "bearerAuth")
+    )
+    public ResponseEntity<?> startRecording(@PathVariable Long roomId) {
+        try {
+            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+            String userEmail = authentication.getName();
+
+            roomService.verifyHostAccess(roomId, userEmail);
+
+            MeetingStateResponse state = roomService.startRecording(roomId, userEmail);
+            return ResponseEntity.ok(state);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest()
+                    .body(new MessageResponse("Error: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{roomId}/recording/stop")
+    @Operation(
+            summary = "Stop meeting recording",
+            description = "Stop recording the meeting (host only)",
+            security = @SecurityRequirement(name = "bearerAuth")
+    )
+    public ResponseEntity<?> stopRecording(@PathVariable Long roomId) {
+        try {
+            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+            String userEmail = authentication.getName();
+
+            roomService.verifyHostAccess(roomId, userEmail);
+
+            MeetingStateResponse state = roomService.stopRecording(roomId, userEmail);
+            return ResponseEntity.ok(state);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest()
+                    .body(new MessageResponse("Error: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{roomId}/lock")
+    @Operation(
+            summary = "Lock meeting",
+            description = "Lock the meeting to prevent new participants from joining (host only)",
+            security = @SecurityRequirement(name = "bearerAuth")
+    )
+    public ResponseEntity<?> lockMeeting(@PathVariable Long roomId) {
+        try {
+            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+            String userEmail = authentication.getName();
+
+            roomService.verifyHostAccess(roomId, userEmail);
+
+            MeetingStateResponse state = roomService.lockMeeting(roomId, userEmail);
+            return ResponseEntity.ok(state);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest()
+                    .body(new MessageResponse("Error: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{roomId}/unlock")
+    @Operation(
+            summary = "Unlock meeting",
+            description = "Unlock the meeting to allow new participants to join (host only)",
+            security = @SecurityRequirement(name = "bearerAuth")
+    )
+    public ResponseEntity<?> unlockMeeting(@PathVariable Long roomId) {
+        try {
+            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+            String userEmail = authentication.getName();
+
+            roomService.verifyHostAccess(roomId, userEmail);
+
+            MeetingStateResponse state = roomService.unlockMeeting(roomId, userEmail);
+            return ResponseEntity.ok(state);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest()
+                    .body(new MessageResponse("Error: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{roomId}/participants/{participantId}/hand")
+    @Operation(
+            summary = "Raise or lower hand",
+            description = "Raise or lower participant's hand",
+            security = @SecurityRequirement(name = "bearerAuth")
+    )
+    public ResponseEntity<?> toggleHand(
+            @PathVariable Long roomId,
+            @PathVariable Long participantId,
+            @RequestBody HandRaiseRequest request
+    ) {
+        try {
+            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+            String userEmail = authentication.getName();
+
+            // Get room and user entities
+            Room room = roomService.getRoomEntityById(roomId);
+            User user = userService.findByEmail(userEmail);
+
+            if (user == null) {
+                throw new RuntimeException("User not found");
+            }
+
+            ParticipantResponse participant = participantService.toggleHandRaise(
+                    room, participantId, user, request.isRaised());
+            return ResponseEntity.ok(participant);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest()
+                    .body(new MessageResponse("Error: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{roomId}/active-speaker")
+    @Operation(
+            summary = "Set active speaker",
+            description = "Set the active speaker for the meeting",
+            security = @SecurityRequirement(name = "bearerAuth")
+    )
+    public ResponseEntity<?> setActiveSpeaker(
+            @PathVariable Long roomId,
+            @RequestParam String speakerId
+    ) {
+        try {
+            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+            String userEmail = authentication.getName();
+
+            MeetingStateResponse state = roomService.setActiveSpeaker(roomId, userEmail, speakerId);
+            return ResponseEntity.ok(state);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest()
+                    .body(new MessageResponse("Error: " + e.getMessage()));
+        }
+    }
+
+    @GetMapping("/{roomId}/state")
+    @Operation(
+            summary = "Get meeting state",
+            description = "Get current meeting state including duration, recording status, etc.",
+            security = @SecurityRequirement(name = "bearerAuth")
+    )
+    public ResponseEntity<?> getMeetingState(@PathVariable Long roomId) {
+        try {
+            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+            String userEmail = authentication.getName();
+
+            if (!roomService.isUserInRoom(roomId, userEmail)) {
+                throw new RuntimeException("Access denied to room");
+            }
+
+            MeetingStateResponse state = roomService.getMeetingState(roomId);
+            return ResponseEntity.ok(state);
+        } catch (RuntimeException e) {
+            return ResponseEntity.badRequest()
+                    .body(new MessageResponse("Error: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/{roomId}/participants/{participantId}/connection-quality")
+    @Operation(
+            summary = "Update connection quality",
+            description = "Update participant's connection quality metrics",
+            security = @SecurityRequirement(name = "bearerAuth")
+    )
+    public ResponseEntity<?> updateConnectionQuality(
+            @PathVariable Long roomId,
+            @PathVariable Long participantId,
+            @RequestBody Map<String, Object> qualityData
+    ) {
+        try {
+            Authentication authentication = SecurityContextHolder.getContext().getAuthentication();
+            String userEmail = authentication.getName();
+
+            // Get room and user entities
+            Room room = roomService.getRoomEntityById(roomId);
+            User user = userService.findByEmail(userEmail);
+
+            if (user == null) {
+                throw new RuntimeException("User not found");
+            }
+
+            participantService.updateConnectionQuality(room, participantId, user, qualityData);
+            return ResponseEntity.ok(new MessageResponse("Connection quality updated"));
         } catch (RuntimeException e) {
             return ResponseEntity.badRequest()
                     .body(new MessageResponse("Error: " + e.getMessage()));

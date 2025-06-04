@@ -8,7 +8,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -22,7 +24,14 @@ public class RoomParticipantService {
     private UserService userService;
 
     @Autowired
-    private EmailService emailService; // We'll create this later
+    private EmailService emailService;
+
+    // REMOVED: RoomService dependency - this was causing the circular dependency!
+    // @Autowired
+    // private RoomService roomService;
+
+    @Autowired
+    private WebSocketNotificationService notificationService;
 
     public RoomParticipant addHostToRoom(Room room, User host) {
         // Check if host is already added
@@ -327,5 +336,101 @@ public class RoomParticipantService {
         return participants.stream()
                 .map(ParticipantResponse::new)
                 .collect(Collectors.toList());
+    }
+
+
+    public ParticipantResponse toggleHandRaise(Room room, Long participantId, User user, boolean raised) {
+        RoomParticipant participant = participantRepository.findById(participantId)
+                .orElseThrow(() -> new RuntimeException("Participant not found"));
+
+        // Verify participant is in the specified room
+        if (!room.getId().equals(participant.getRoom().getId())) {
+            throw new RuntimeException("Participant not found in this room");
+        }
+
+        // Verify user can control this hand raise (own hand or host privilege)
+        boolean canControl = participant.getUser() != null && participant.getUser().equals(user) ||
+                room.getHost().equals(user) ||
+                isCoHost(room, user);
+
+        if (!canControl) {
+            throw new RuntimeException("No permission to control hand raising for this participant");
+        }
+
+        // Update hand raise status
+        if (raised) {
+            participant.raiseHand();
+            notificationService.notifyHandRaised(room, participant);
+        } else {
+            participant.lowerHand();
+            notificationService.notifyHandLowered(room, participant);
+        }
+
+        participant = participantRepository.save(participant);
+        return new ParticipantResponse(participant);
+    }
+
+    public void updateConnectionQuality(Room room, Long participantId, User user, Map<String, Object> qualityData) {
+        RoomParticipant participant = participantRepository.findById(participantId)
+                .orElseThrow(() -> new RuntimeException("Participant not found"));
+
+        // Verify participant is in the specified room
+        if (!room.getId().equals(participant.getRoom().getId())) {
+            throw new RuntimeException("Participant not found in this room");
+        }
+
+        // Verify user can update this data (own data or host monitoring)
+        boolean canUpdate = participant.getUser() != null && participant.getUser().equals(user) ||
+                room.getHost().equals(user) ||
+                isCoHost(room, user);
+
+        if (!canUpdate) {
+            throw new RuntimeException("No permission to update connection quality for this participant");
+        }
+
+        // Extract quality metrics
+        double packetLoss = (Double) qualityData.getOrDefault("packetLoss", 0.0);
+        int latency = (Integer) qualityData.getOrDefault("latency", 0);
+        int bandwidth = (Integer) qualityData.getOrDefault("bandwidth", 0);
+
+        // Update connection quality
+        participant.updateConnectionQuality(packetLoss, latency, bandwidth);
+        participant = participantRepository.save(participant);
+
+        // Notify hosts of quality changes
+        notificationService.notifyConnectionQualityUpdate(room, participant);
+    }
+
+    public List<ParticipantResponse> getParticipantsWithRaisedHands(Room room) {
+        return participantRepository.findByRoom(room)
+                .stream()
+                .filter(p -> p.getIsHandRaised() != null && p.getIsHandRaised())
+                .map(ParticipantResponse::new)
+                .collect(Collectors.toList());
+    }
+
+    public Map<String, Object> getParticipantStatistics(Room room, User user) {
+        // Only host and co-hosts can view detailed statistics
+        if (!room.getHost().equals(user) && !isCoHost(room, user)) {
+            throw new RuntimeException("Access denied to participant statistics");
+        }
+
+        List<RoomParticipant> participants = participantRepository.findByRoom(room);
+
+        Map<String, Object> stats = new HashMap<>();
+        stats.put("totalParticipants", participants.size());
+        stats.put("activeParticipants", participants.stream()
+                .filter(p -> p.getStatus() == ParticipantStatus.JOINED)
+                .count());
+        stats.put("raisedHands", participants.stream()
+                .filter(p -> p.getIsHandRaised() != null && p.getIsHandRaised())
+                .count());
+        stats.put("connectionQuality", participants.stream()
+                .collect(Collectors.groupingBy(
+                        p -> p.getConnectionQuality() != null ? p.getConnectionQuality() : ConnectionQuality.GOOD,
+                        Collectors.counting()
+                )));
+
+        return stats;
     }
 }

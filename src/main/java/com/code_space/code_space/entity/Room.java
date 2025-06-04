@@ -106,6 +106,42 @@ public class Room {
     @Column(name = "updated_at")
     private LocalDateTime updatedAt;
 
+    @Column(name = "is_locked")
+    private Boolean isLocked = false;
+
+    @Column(name = "active_speaker_id")
+    private String activeSpeakerId; // User ID or participant ID of current speaker
+
+    @Column(name = "meeting_duration")
+    private Long meetingDuration = 0L; // Duration in seconds
+
+    // Recording Management
+    @Column(name = "is_recording")
+    private Boolean isRecording = false;
+
+    @Column(name = "recording_started_at")
+    private LocalDateTime recordingStartedAt;
+
+    @Column(name = "recording_file_path")
+    private String recordingFilePath;
+
+    @Column(name = "recording_size_bytes")
+    private Long recordingSizeBytes = 0L;
+
+    // Enhanced Meeting Analytics
+    @Column(name = "peak_participants")
+    private Integer peakParticipants = 0;
+
+    @Column(name = "total_messages_sent")
+    private Long totalMessagesSent = 0L;
+
+    @Column(name = "total_reactions_sent")
+    private Long totalReactionsSent = 0L;
+
+    // WebRTC Quality Tracking
+    @Column(name = "average_connection_quality")
+    private String averageConnectionQuality; // JSON string with quality metrics
+
     // Constructors
     public Room() {
         this.roomCode = generateRoomCode();
@@ -217,6 +253,40 @@ public class Room {
     public LocalDateTime getUpdatedAt() { return updatedAt; }
     public void setUpdatedAt(LocalDateTime updatedAt) { this.updatedAt = updatedAt; }
 
+    public Boolean getIsLocked() { return isLocked; }
+    public void setIsLocked(Boolean isLocked) { this.isLocked = isLocked; }
+
+    public String getActiveSpeakerId() { return activeSpeakerId; }
+    public void setActiveSpeakerId(String activeSpeakerId) { this.activeSpeakerId = activeSpeakerId; }
+
+    public Long getMeetingDuration() { return meetingDuration; }
+    public void setMeetingDuration(Long meetingDuration) { this.meetingDuration = meetingDuration; }
+
+    public Boolean getIsRecording() { return isRecording; }
+    public void setIsRecording(Boolean isRecording) { this.isRecording = isRecording; }
+
+    public LocalDateTime getRecordingStartedAt() { return recordingStartedAt; }
+    public void setRecordingStartedAt(LocalDateTime recordingStartedAt) { this.recordingStartedAt = recordingStartedAt; }
+
+    public String getRecordingFilePath() { return recordingFilePath; }
+    public void setRecordingFilePath(String recordingFilePath) { this.recordingFilePath = recordingFilePath; }
+
+    public Long getRecordingSizeBytes() { return recordingSizeBytes; }
+    public void setRecordingSizeBytes(Long recordingSizeBytes) { this.recordingSizeBytes = recordingSizeBytes; }
+
+    public Integer getPeakParticipants() { return peakParticipants; }
+    public void setPeakParticipants(Integer peakParticipants) { this.peakParticipants = peakParticipants; }
+
+    public Long getTotalMessagesSent() { return totalMessagesSent; }
+    public void setTotalMessagesSent(Long totalMessagesSent) { this.totalMessagesSent = totalMessagesSent; }
+
+    public Long getTotalReactionsSent() { return totalReactionsSent; }
+    public void setTotalReactionsSent(Long totalReactionsSent) { this.totalReactionsSent = totalReactionsSent; }
+
+    public String getAverageConnectionQuality() { return averageConnectionQuality; }
+    public void setAverageConnectionQuality(String averageConnectionQuality) { this.averageConnectionQuality = averageConnectionQuality; }
+
+
     @PrePersist
     protected void onCreate() {
         createdAt = LocalDateTime.now();
@@ -248,4 +318,37 @@ public class Room {
     public boolean isFull() {
         return getParticipantCount() >= maxParticipants;
     }
+
+    public boolean isLocked() {
+        return isLocked != null && isLocked;
+    }
+
+    public boolean isCurrentlyRecording() {
+        return isRecording != null && isRecording && recordingStartedAt != null;
+    }
+
+    public void startRecording() {
+        this.isRecording = true;
+        this.recordingStartedAt = LocalDateTime.now();
+    }
+
+    public void stopRecording() {
+        this.isRecording = false;
+        // Keep recordingStartedAt for duration calculation
+    }
+
+    public void incrementMessageCount() {
+        this.totalMessagesSent = this.totalMessagesSent + 1;
+    }
+
+    public void incrementReactionCount() {
+        this.totalReactionsSent = this.totalReactionsSent + 1;
+    }
+
+    public void updatePeakParticipants(int currentCount) {
+        if (currentCount > this.peakParticipants) {
+            this.peakParticipants = currentCount;
+        }
+    }
+
 }

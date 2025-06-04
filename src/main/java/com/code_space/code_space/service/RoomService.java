@@ -1,9 +1,15 @@
 package com.code_space.code_space.service;
 
+import java.time.LocalDateTime;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.stream.Collectors;
+
 import com.code_space.code_space.dto.*;
-import com.code_space.code_space.entity.*;
-import com.code_space.code_space.repository.RoomRepository;
-import com.code_space.code_space.repository.RoomParticipantRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -12,18 +18,15 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
-import com.code_space.code_space.entity.Room;
 import com.code_space.code_space.entity.ParticipantRole;
-
-import java.time.LocalDateTime;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.stream.Collectors;
-
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import com.code_space.code_space.entity.RecurrenceType;
+import com.code_space.code_space.entity.Room;
+import com.code_space.code_space.entity.RoomParticipant;
+import com.code_space.code_space.entity.RoomStatus;
+import com.code_space.code_space.entity.RoomType;
+import com.code_space.code_space.entity.User;
+import com.code_space.code_space.repository.RoomParticipantRepository;
+import com.code_space.code_space.repository.RoomRepository;
 
 @Service
 @Transactional
@@ -59,35 +62,34 @@ public class RoomService {
             throw new RuntimeException("User not found");
         }
 
-        // Validate scheduling
+        // Validate scheduling for scheduled meetings
         if (request.getType() == RoomType.SCHEDULED) {
             validateScheduling(request);
         }
 
-        // Create room
+        // Create room with basic settings
         Room room = new Room(request.getTitle(), host);
         room.setDescription(request.getDescription());
         room.setType(request.getType());
 
-        // Set meeting settings
-        room.setPassword(request.getPassword() != null ?
-                passwordEncoder.encode(request.getPassword()) : null);
-        room.setWaitingRoomEnabled(request.getWaitingRoomEnabled());
-        room.setRecordingEnabled(request.getRecordingEnabled());
-        room.setChatEnabled(request.getChatEnabled());
-        room.setScreenSharingEnabled(request.getScreenSharingEnabled());
-        room.setParticipantsCanUnmute(request.getParticipantsCanUnmute());
-        room.setParticipantsCanShareScreen(request.getParticipantsCanShareScreen());
-        room.setMaxParticipants(request.getMaxParticipants());
+        // Set meeting settings with defaults
+        room.setPassword(request.getPassword() != null ? passwordEncoder.encode(request.getPassword()) : null);
+        room.setWaitingRoomEnabled(request.getWaitingRoomEnabled() != null ? request.getWaitingRoomEnabled() : true);
+        room.setRecordingEnabled(request.getRecordingEnabled() != null ? request.getRecordingEnabled() : false);
+        room.setChatEnabled(request.getChatEnabled() != null ? request.getChatEnabled() : true);
+        room.setScreenSharingEnabled(request.getScreenSharingEnabled() != null ? request.getScreenSharingEnabled() : true);
+        room.setParticipantsCanUnmute(request.getParticipantsCanUnmute() != null ? request.getParticipantsCanUnmute() : true);
+        room.setParticipantsCanShareScreen(request.getParticipantsCanShareScreen() != null ? request.getParticipantsCanShareScreen() : true);
+        room.setMaxParticipants(request.getMaxParticipants() != null ? request.getMaxParticipants() : 100);
 
-        // Set scheduling
+        // Set scheduling for scheduled meetings
         if (request.getType() == RoomType.SCHEDULED) {
             room.setScheduledStartTime(request.getScheduledStartTime());
             room.setScheduledEndTime(request.getScheduledEndTime());
             room.setTimezone(request.getTimezone());
             room.setStatus(RoomStatus.SCHEDULED);
 
-            // Set recurring settings
+            // Set recurring settings if applicable
             if (request.getIsRecurring()) {
                 room.setIsRecurring(true);
                 room.setRecurrenceType(request.getRecurrenceType());
@@ -106,8 +108,24 @@ public class RoomService {
 
         // Send invitations if provided
         if (request.getInviteEmails() != null && !request.getInviteEmails().isEmpty()) {
+            // Validate email addresses
             for (String email : request.getInviteEmails()) {
-                participantService.inviteParticipant(room, email, ParticipantRole.PARTICIPANT);
+                if (!email.matches("^[A-Za-z0-9+_.-]+@(.+)$")) {
+                    throw new RuntimeException("Invalid email address: " + email);
+                }
+            }
+
+            // Send invitations in batches to avoid overwhelming the email service
+            int batchSize = 10;
+            for (int i = 0; i < request.getInviteEmails().size(); i += batchSize) {
+                List<String> batch = request.getInviteEmails().subList(
+                    i, 
+                    Math.min(i + batchSize, request.getInviteEmails().size())
+                );
+                
+                for (String email : batch) {
+                    participantService.inviteParticipant(room, email, ParticipantRole.PARTICIPANT);
+                }
             }
         }
 
@@ -371,19 +389,108 @@ public class RoomService {
 
     // Helper methods
     private void validateScheduling(CreateRoomRequest request) {
-        if (request.getScheduledStartTime() == null) {
-            throw new RuntimeException("Scheduled start time is required for scheduled meetings");
+        LocalDateTime now = LocalDateTime.now();
+        
+        // Validate start time is in the future
+        if (request.getScheduledStartTime().isBefore(now)) {
+            throw new RuntimeException("Meeting start time must be in the future");
         }
-        if (request.getScheduledStartTime().isBefore(LocalDateTime.now())) {
-            throw new RuntimeException("Scheduled start time cannot be in the past");
+
+        // Validate end time is after start time
+        if (request.getScheduledEndTime().isBefore(request.getScheduledStartTime())) {
+            throw new RuntimeException("Meeting end time must be after start time");
         }
-        if (request.getScheduledEndTime() != null &&
-                request.getScheduledEndTime().isBefore(request.getScheduledStartTime())) {
-            throw new RuntimeException("End time cannot be before start time");
+
+        // Validate meeting duration (max 24 hours)
+        long durationHours = java.time.Duration.between(
+            request.getScheduledStartTime(),
+            request.getScheduledEndTime()
+        ).toHours();
+        
+        if (durationHours > 24) {
+            throw new RuntimeException("Meeting duration cannot exceed 24 hours");
         }
-        if (request.getIsRecurring() && request.getRecurrenceType() == null) {
+
+        // Validate minimum duration (5 minutes)
+        long durationMinutes = java.time.Duration.between(
+            request.getScheduledStartTime(),
+            request.getScheduledEndTime()
+        ).toMinutes();
+        
+        if (durationMinutes < 5) {
+            throw new RuntimeException("Meeting duration must be at least 5 minutes");
+        }
+
+        // Validate timezone
+        if (request.getTimezone() == null || request.getTimezone().trim().isEmpty()) {
+            throw new RuntimeException("Timezone is required for scheduled meetings");
+        }
+
+        // Validate recurring settings if recurring
+        if (request.getIsRecurring()) {
+            validateRecurringSettings(request);
+        }
+    }
+
+    private void validateRecurringSettings(CreateRoomRequest request) {
+        if (request.getRecurrenceType() == null) {
             throw new RuntimeException("Recurrence type is required for recurring meetings");
         }
+
+        if (request.getRecurrenceInterval() == null || request.getRecurrenceInterval() < 1) {
+            throw new RuntimeException("Recurrence interval must be at least 1");
+        }
+
+        if (request.getRecurrenceEndDate() == null) {
+            throw new RuntimeException("Recurrence end date is required for recurring meetings");
+        }
+
+        // Validate recurrence end date is after start time
+        if (request.getRecurrenceEndDate().isBefore(request.getScheduledStartTime())) {
+            throw new RuntimeException("Recurrence end date must be after meeting start time");
+        }
+
+        // Validate maximum recurrence period (1 year)
+        long recurrenceDays = java.time.Duration.between(
+            request.getScheduledStartTime(),
+            request.getRecurrenceEndDate()
+        ).toDays();
+        
+        if (recurrenceDays > 365) {
+            throw new RuntimeException("Recurring meetings cannot be scheduled for more than 1 year");
+        }
+
+        // Validate maximum number of occurrences based on interval
+        long maxOccurrences = switch (request.getRecurrenceType()) {
+            case DAILY -> 365 / request.getRecurrenceInterval();
+            case WEEKLY -> 52 / request.getRecurrenceInterval();
+            case MONTHLY -> 12 / request.getRecurrenceInterval();
+            case YEARLY -> 1;
+            default -> throw new RuntimeException("Invalid recurrence type");
+        };
+
+        long actualOccurrences = calculateOccurrences(
+            request.getScheduledStartTime(),
+            request.getRecurrenceEndDate(),
+            request.getRecurrenceType(),
+            request.getRecurrenceInterval()
+        );
+
+        if (actualOccurrences > maxOccurrences) {
+            throw new RuntimeException("Too many recurring instances. Please reduce the recurrence period or increase the interval");
+        }
+    }
+
+    private long calculateOccurrences(LocalDateTime start, LocalDateTime end, RecurrenceType type, int interval) {
+        long count = 0;
+        LocalDateTime current = start;
+        
+        while (!current.isAfter(end)) {
+            count++;
+            current = calculateNextOccurrence(current, type, interval);
+        }
+        
+        return count;
     }
 
     private boolean hasRoomAccess(Room room, User user) {
@@ -572,5 +679,146 @@ public class RoomService {
     }
     public void updateRoomEntity(Room room) {
         roomRepository.save(room);
+    }
+
+    public MeetingStateResponse startRecording(Long roomId, String userEmail) {
+        Room room = getRoomEntityById(roomId);
+        User user = userService.findByEmail(userEmail);
+
+        if (!room.getHost().equals(user)) {
+            throw new RuntimeException("Only the host can start recording");
+        }
+
+        if (room.getIsRecording() != null && room.getIsRecording()) {
+            throw new RuntimeException("Recording is already active");
+        }
+
+        if (!room.getRecordingEnabled()) {
+            throw new RuntimeException("Recording is not enabled for this room");
+        }
+
+        room.startRecording();
+        room = roomRepository.save(room);
+
+        // Send WebSocket notification
+        notificationService.notifyRecordingStarted(room);
+
+        return new MeetingStateResponse(room);
+    }
+
+    public MeetingStateResponse stopRecording(Long roomId, String userEmail) {
+        Room room = getRoomEntityById(roomId);
+        User user = userService.findByEmail(userEmail);
+
+        if (!room.getHost().equals(user)) {
+            throw new RuntimeException("Only the host can stop recording");
+        }
+
+        if (room.getIsRecording() == null || !room.getIsRecording()) {
+            throw new RuntimeException("No active recording to stop");
+        }
+
+        room.stopRecording();
+        room = roomRepository.save(room);
+
+        // Send WebSocket notification
+        notificationService.notifyRecordingStopped(room);
+
+        return new MeetingStateResponse(room);
+    }
+
+    public MeetingStateResponse lockMeeting(Long roomId, String userEmail) {
+        Room room = getRoomEntityById(roomId);
+        User user = userService.findByEmail(userEmail);
+
+        if (!room.getHost().equals(user)) {
+            throw new RuntimeException("Only the host can lock the meeting");
+        }
+
+        room.setIsLocked(true);
+        room = roomRepository.save(room);
+
+        // Send WebSocket notification
+        notificationService.notifyMeetingLocked(room);
+
+        return new MeetingStateResponse(room);
+    }
+
+    public MeetingStateResponse unlockMeeting(Long roomId, String userEmail) {
+        Room room = getRoomEntityById(roomId);
+        User user = userService.findByEmail(userEmail);
+
+        if (!room.getHost().equals(user)) {
+            throw new RuntimeException("Only the host can unlock the meeting");
+        }
+
+        room.setIsLocked(false);
+        room = roomRepository.save(room);
+
+        // Send WebSocket notification
+        notificationService.notifyMeetingUnlocked(room);
+
+        return new MeetingStateResponse(room);
+    }
+
+    public MeetingStateResponse setActiveSpeaker(Long roomId, String userEmail, String speakerId) {
+        Room room = getRoomEntityById(roomId);
+
+        // Verify user has permission (host, co-host, or system detection)
+        if (!isUserInRoom(roomId, userEmail)) {
+            throw new RuntimeException("Access denied to room");
+        }
+
+        room.setActiveSpeakerId(speakerId);
+        room = roomRepository.save(room);
+
+        // Get speaker name for notification
+        String speakerName = "Unknown";
+        try {
+            // Try to find participant by ID to get name
+            // This would require additional logic to resolve speakerId to name
+            speakerName = "Participant " + speakerId;
+        } catch (Exception e) {
+            // Use default name if resolution fails
+        }
+
+        // Send WebSocket notification
+        notificationService.notifyActiveSpeakerChanged(room, speakerId, speakerName);
+
+        return new MeetingStateResponse(room);
+    }
+
+    public MeetingStateResponse getMeetingState(Long roomId) {
+        Room room = getRoomEntityById(roomId);
+
+        MeetingStateResponse response = new MeetingStateResponse(room);
+
+        // Get raised hands
+        List<String> raisedHands = participantRepository.findByRoom(room)
+                .stream()
+                .filter(p -> p.getIsHandRaised() != null && p.getIsHandRaised())
+                .map(p -> p.getDisplayName())
+                .collect(Collectors.toList());
+        response.setRaisedHands(raisedHands);
+
+        // Get active reactions (would require ReactionsService integration)
+        // List<ReactionResponse> activeReactions = reactionsService.getActiveReactions(roomId, userEmail);
+        // response.setActiveReactions(activeReactions);
+
+        return response;
+    }
+
+    public void updateMeetingDuration(Long roomId) {
+        Room room = getRoomEntityById(roomId);
+
+        if (room.getActualStartTime() != null) {
+            long durationSeconds = java.time.Duration.between(
+                    room.getActualStartTime(),
+                    LocalDateTime.now()
+            ).getSeconds();
+
+            room.setMeetingDuration(durationSeconds);
+            roomRepository.save(room);
+        }
     }
 }

@@ -1,6 +1,8 @@
 package com.code_space.code_space.service;
 
+import com.code_space.code_space.dto.ChatMessageResponse;
 import com.code_space.code_space.dto.ParticipantResponse;
+import com.code_space.code_space.dto.ReactionResponse;
 import com.code_space.code_space.dto.RoomResponse;
 import com.code_space.code_space.entity.Room;
 import com.code_space.code_space.entity.RoomParticipant;
@@ -26,41 +28,7 @@ public class WebSocketNotificationService {
     @Autowired
     private EmailService emailService;
 
-    // Meeting Events
-    public void notifyMeetingStarted(Room room) {
-        Map<String, Object> notification = new HashMap<>();
-        notification.put("type", "MEETING_STARTED");
-        notification.put("room", new RoomResponse(room));
-        notification.put("message", "The meeting has started");
-        notification.put("timestamp", System.currentTimeMillis());
 
-        // Send to all participants in the room
-        sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/events", notification);
-
-        // Send email notifications to invited participants who haven't joined
-        List<RoomParticipant> invitedParticipants = participantRepository.findByRoom(room)
-                .stream()
-                .filter(p -> p.getStatus().name().equals("INVITED"))
-                .collect(Collectors.toList());
-
-        List<String> emails = invitedParticipants.stream()
-                .map(RoomParticipant::getEmail)
-                .collect(Collectors.toList());
-
-        if (!emails.isEmpty()) {
-            emailService.sendMeetingStarted(emails, room);
-        }
-    }
-
-    public void notifyMeetingEnded(Room room) {
-        Map<String, Object> notification = new HashMap<>();
-        notification.put("type", "MEETING_ENDED");
-        notification.put("room", new RoomResponse(room));
-        notification.put("message", "The meeting has ended");
-        notification.put("timestamp", System.currentTimeMillis());
-
-        sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/events", notification);
-    }
 
     // Participant Events
     public void notifyParticipantJoined(Room room, RoomParticipant participant) {
@@ -158,18 +126,6 @@ public class WebSocketNotificationService {
         sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/participants", notification);
     }
 
-    // Room Settings Events
-    public void notifyRoomSettingsChanged(Room room, String settingName, Object oldValue, Object newValue) {
-        Map<String, Object> notification = new HashMap<>();
-        notification.put("type", "ROOM_SETTINGS_CHANGED");
-        notification.put("setting", settingName);
-        notification.put("oldValue", oldValue);
-        notification.put("newValue", newValue);
-        notification.put("message", "Room settings have been updated");
-        notification.put("timestamp", System.currentTimeMillis());
-
-        sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/settings", notification);
-    }
 
     // Chat Events (for future implementation)
     public void notifyNewChatMessage(Room room, String sender, String message) {
@@ -244,5 +200,136 @@ public class WebSocketNotificationService {
                 messagingTemplate.convertAndSendToUser(coHostId, destination, notification);
             }
         }
+    }
+
+    public void sendChatMessageNotification(Room room, ChatMessageResponse message) {
+        Map<String, Object> notification = new HashMap<>();
+        notification.put("type", "NEW_CHAT_MESSAGE");
+        notification.put("message", message);
+        notification.put("timestamp", System.currentTimeMillis());
+
+        sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/chat", notification);
+    }
+
+    public void sendChatMessageEditNotification(Room room, ChatMessageResponse message) {
+        Map<String, Object> notification = new HashMap<>();
+        notification.put("type", "CHAT_MESSAGE_EDITED");
+        notification.put("message", message);
+        notification.put("timestamp", System.currentTimeMillis());
+
+        sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/chat", notification);
+    }
+
+    public void sendChatMessageDeleteNotification(Room room, Long messageId) {
+        Map<String, Object> notification = new HashMap<>();
+        notification.put("type", "CHAT_MESSAGE_DELETED");
+        notification.put("messageId", messageId);
+        notification.put("timestamp", System.currentTimeMillis());
+
+        sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/chat", notification);
+    }
+
+    // Reaction Events
+    public void sendReactionNotification(Room room, ReactionResponse reaction) {
+        Map<String, Object> notification = new HashMap<>();
+        notification.put("type", "NEW_REACTION");
+        notification.put("reaction", reaction);
+        notification.put("timestamp", System.currentTimeMillis());
+
+        sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/reactions", notification);
+    }
+
+    // Hand Raising Events
+    public void notifyHandRaised(Room room, RoomParticipant participant) {
+        Map<String, Object> notification = new HashMap<>();
+        notification.put("type", "HAND_RAISED");
+        notification.put("participant", new ParticipantResponse(participant));
+        notification.put("message", participant.getDisplayName() + " raised their hand");
+        notification.put("timestamp", System.currentTimeMillis());
+
+        sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/hands", notification);
+    }
+
+    public void notifyHandLowered(Room room, RoomParticipant participant) {
+        Map<String, Object> notification = new HashMap<>();
+        notification.put("type", "HAND_LOWERED");
+        notification.put("participant", new ParticipantResponse(participant));
+        notification.put("message", participant.getDisplayName() + " lowered their hand");
+        notification.put("timestamp", System.currentTimeMillis());
+
+        sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/hands", notification);
+    }
+
+    // Meeting State Events
+    public void notifyMeetingLocked(Room room) {
+        Map<String, Object> notification = new HashMap<>();
+        notification.put("type", "MEETING_LOCKED");
+        notification.put("message", "Meeting has been locked by the host");
+        notification.put("timestamp", System.currentTimeMillis());
+
+        sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/state", notification);
+    }
+
+    public void notifyMeetingUnlocked(Room room) {
+        Map<String, Object> notification = new HashMap<>();
+        notification.put("type", "MEETING_UNLOCKED");
+        notification.put("message", "Meeting has been unlocked by the host");
+        notification.put("timestamp", System.currentTimeMillis());
+
+        sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/state", notification);
+    }
+
+    public void notifyActiveSpeakerChanged(Room room, String newSpeakerId, String speakerName) {
+        Map<String, Object> notification = new HashMap<>();
+        notification.put("type", "ACTIVE_SPEAKER_CHANGED");
+        notification.put("speakerId", newSpeakerId);
+        notification.put("speakerName", speakerName);
+        notification.put("message", speakerName + " is now speaking");
+        notification.put("timestamp", System.currentTimeMillis());
+
+        sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/speaker", notification);
+    }
+
+    // Connection Quality Events
+    public void notifyConnectionQualityUpdate(Room room, RoomParticipant participant) {
+        Map<String, Object> notification = new HashMap<>();
+        notification.put("type", "CONNECTION_QUALITY_UPDATE");
+        notification.put("participant", new ParticipantResponse(participant));
+        notification.put("timestamp", System.currentTimeMillis());
+
+        // Send only to hosts for monitoring
+        sendToHostsOnly(room, "/topic/room/" + room.getId() + "/quality", notification);
+    }
+
+    public void notifyMeetingStarted(Room room) {
+        Map<String, Object> notification = new HashMap<>();
+        notification.put("type", "MEETING_STARTED");
+        notification.put("roomId", room.getId());
+        notification.put("message", "Meeting has started");
+        notification.put("timestamp", System.currentTimeMillis());
+
+        sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/events", notification);
+    }
+
+    public void notifyMeetingEnded(Room room) {
+        Map<String, Object> notification = new HashMap<>();
+        notification.put("type", "MEETING_ENDED");
+        notification.put("roomId", room.getId());
+        notification.put("message", "Meeting has ended");
+        notification.put("timestamp", System.currentTimeMillis());
+
+        sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/events", notification);
+    }
+
+    public void notifyRoomSettingsChanged(Room room, String settingName, Object oldValue, Object newValue) {
+        Map<String, Object> notification = new HashMap<>();
+        notification.put("type", "ROOM_SETTINGS_CHANGED");
+        notification.put("roomId", room.getId());
+        notification.put("settingName", settingName);
+        notification.put("oldValue", oldValue);
+        notification.put("newValue", newValue);
+        notification.put("timestamp", System.currentTimeMillis());
+
+        sendToRoomParticipants(room, "/topic/room/" + room.getId() + "/events", notification);
     }
 }
