@@ -91,6 +91,9 @@ public class WebSecurityConfig {
 
                         .requestMatchers("/api/webrtc/**").authenticated()
 
+                        .requestMatchers(HttpMethod.POST, "/api/rooms/join").permitAll()
+
+
 
                         // All other endpoints require authentication
                         .anyRequest().authenticated()

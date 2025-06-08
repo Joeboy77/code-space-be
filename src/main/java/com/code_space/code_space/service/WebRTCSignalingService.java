@@ -41,57 +41,86 @@ public class WebRTCSignalingService {
     // In-memory store for active WebSocket sessions
     private final Map<String, Set<String>> roomParticipants = new ConcurrentHashMap<>();
     private final Map<String, String> participantToRoom = new ConcurrentHashMap<>();
+    private final Map<String, Map<String, Object>> participantInfo = new ConcurrentHashMap<>();
 
     private static final int MAX_CONCURRENT_SCREENS = 4;
 
     // WebRTC Signaling Methods
 
     public void handleSignalingMessage(WebRTCSignalMessage message) {
-        logger.info("Handling signaling message: {} for room: {}", message.getType(), message.getRoomId());
+        logger.info("Handling signaling message: {} for room: {} from: {}",
+                message.getType(), message.getRoomId(), message.getFromParticipantId());
 
-        switch (message.getType()) {
-            case "offer":
-                handleOffer(message);
-                break;
-            case "answer":
-                handleAnswer(message);
-                break;
-            case "ice-candidate":
-                handleIceCandidate(message);
-                break;
-            case "join-room":
-                handleJoinRoom(message);
-                break;
-            case "leave-room":
-                handleLeaveRoom(message);
-                break;
-            default:
-                logger.warn("Unknown signaling message type: {}", message.getType());
+        try {
+            switch (message.getType()) {
+                case "offer":
+                    handleOffer(message);
+                    break;
+                case "answer":
+                    handleAnswer(message);
+                    break;
+                case "ice-candidate":
+                    handleIceCandidate(message);
+                    break;
+                case "join-room":
+                    handleJoinRoom(message);
+                    break;
+                case "leave-room":
+                    handleLeaveRoom(message);
+                    break;
+                default:
+                    logger.warn("Unknown signaling message type: {}", message.getType());
+            }
+        } catch (Exception e) {
+            logger.error("Error processing signaling message: {}", e.getMessage(), e);
         }
     }
 
     private void handleOffer(WebRTCSignalMessage message) {
-        // Forward offer to specific participant
-        if (message.getToParticipantId() != null) {
-            sendToParticipant(message.getToParticipantId(), message);
-        } else {
-            // Broadcast offer to all participants in room except sender
-            broadcastToRoom(message.getRoomId(), message, message.getFromParticipantId());
+        try {
+            logger.debug("Handling offer from {} to {} in room {}",
+                    message.getFromParticipantId(), message.getToParticipantId(), message.getRoomId());
+
+            // Forward offer to specific participant or broadcast to all
+            if (message.getToParticipantId() != null && !message.getToParticipantId().isEmpty()) {
+                sendToParticipant(message.getToParticipantId(), message.getRoomId(), message);
+            } else {
+                // Broadcast offer to all participants in room except sender
+                broadcastToRoom(message.getRoomId(), message, message.getFromParticipantId());
+            }
+        } catch (Exception e) {
+            logger.error("Error handling offer: {}", e.getMessage(), e);
         }
     }
 
     private void handleAnswer(WebRTCSignalMessage message) {
-        // Forward answer to specific participant
-        sendToParticipant(message.getToParticipantId(), message);
+        try {
+            logger.debug("Handling answer from {} to {} in room {}",
+                    message.getFromParticipantId(), message.getToParticipantId(), message.getRoomId());
+
+            // Forward answer to specific participant
+            if (message.getToParticipantId() != null && !message.getToParticipantId().isEmpty()) {
+                sendToParticipant(message.getToParticipantId(), message.getRoomId(), message);
+            }
+        } catch (Exception e) {
+            logger.error("Error handling answer: {}", e.getMessage(), e);
+        }
     }
 
     private void handleIceCandidate(WebRTCSignalMessage message) {
-        // Forward ICE candidate to specific participant
-        if (message.getToParticipantId() != null) {
-            sendToParticipant(message.getToParticipantId(), message);
-        } else {
-            // Broadcast to all participants
-            broadcastToRoom(message.getRoomId(), message, message.getFromParticipantId());
+        try {
+            logger.debug("Handling ICE candidate from {} to {} in room {}",
+                    message.getFromParticipantId(), message.getToParticipantId(), message.getRoomId());
+
+            // Forward ICE candidate to specific participant or broadcast to all
+            if (message.getToParticipantId() != null && !message.getToParticipantId().isEmpty()) {
+                sendToParticipant(message.getToParticipantId(), message.getRoomId(), message);
+            } else {
+                // Broadcast to all participants except sender
+                broadcastToRoom(message.getRoomId(), message, message.getFromParticipantId());
+            }
+        } catch (Exception e) {
+            logger.error("Error handling ICE candidate: {}", e.getMessage(), e);
         }
     }
 
@@ -99,151 +128,216 @@ public class WebRTCSignalingService {
         String roomId = message.getRoomId();
         String participantId = message.getFromParticipantId();
 
-        // Add participant to room tracking
-        roomParticipants.computeIfAbsent(roomId, k -> ConcurrentHashMap.newKeySet()).add(participantId);
-        participantToRoom.put(participantId, roomId);
+        try {
+            logger.info("Participant {} joining room {}", participantId, roomId);
 
-        // Update or create room session
-        Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
-        RoomSession session = getOrCreateSession(room);
-        session.addParticipant(participantId, "connecting");
-        sessionRepository.save(session);
+            // Add participant to room tracking
+            roomParticipants.computeIfAbsent(roomId, k -> ConcurrentHashMap.newKeySet()).add(participantId);
+            participantToRoom.put(participantId, roomId);
 
-        // Notify other participants about new participant
-        Map<String, Object> joinNotification = Map.of(
-                "type", "participant-joined",
-                "participantId", participantId,
-                "roomId", roomId,
-                "participants", new ArrayList<>(roomParticipants.get(roomId))
-        );
+            // Store participant info
+            Map<String, Object> info = new HashMap<>();
+            info.put("joinedAt", System.currentTimeMillis());
+            info.put("isGuest", participantId.startsWith("guest_"));
+            info.put("status", "connected");
+            participantInfo.put(participantId, info);
 
-        broadcastToRoom(roomId, joinNotification, participantId);
+            // Update or create room session
+            try {
+                Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
+                RoomSession session = getOrCreateSession(room);
+                session.addParticipant(participantId, "connected");
+                sessionRepository.save(session);
+            } catch (NumberFormatException e) {
+                logger.warn("Invalid room ID format: {}", roomId);
+            }
 
-        // Send current participants list to new participant
-        Map<String, Object> participantsList = Map.of(
-                "type", "participants-list",
-                "participants", new ArrayList<>(roomParticipants.get(roomId))
-        );
-        sendToParticipant(participantId, participantsList);
+            // Get current participants list
+            Set<String> participants = roomParticipants.get(roomId);
+            List<String> participantsList = new ArrayList<>(participants != null ? participants : Set.of());
 
-        logger.info("Participant {} joined room {}", participantId, roomId);
+            // Notify other participants about new participant
+            Map<String, Object> joinNotification = Map.of(
+                    "type", "participant-joined",
+                    "participantId", participantId,
+                    "roomId", roomId,
+                    "participants", participantsList,
+                    "isGuest", participantId.startsWith("guest_"),
+                    "timestamp", System.currentTimeMillis()
+            );
+
+            broadcastToRoom(roomId, joinNotification, participantId);
+
+            // Send current participants list to new participant
+            Map<String, Object> participantsListMessage = Map.of(
+                    "type", "participants-list",
+                    "participants", participantsList,
+                    "roomId", roomId
+            );
+            sendToParticipant(participantId, roomId, participantsListMessage);
+
+            // Send room info to new participant
+            Map<String, Object> roomInfo = Map.of(
+                    "type", "room-info",
+                    "roomId", roomId,
+                    "participantCount", participantsList.size(),
+                    "sessionStarted", true
+            );
+            sendToParticipant(participantId, roomId, roomInfo);
+
+            logger.info("Participant {} successfully joined room {}. Total participants: {}",
+                    participantId, roomId, participantsList.size());
+
+        } catch (Exception e) {
+            logger.error("Error handling join room for participant {} in room {}: {}",
+                    participantId, roomId, e.getMessage(), e);
+        }
     }
 
     private void handleLeaveRoom(WebRTCSignalMessage message) {
         String roomId = message.getRoomId();
         String participantId = message.getFromParticipantId();
 
+        logger.info("Participant {} leaving room {}", participantId, roomId);
         removeParticipantFromRoom(participantId, roomId);
     }
 
     // Media Control Methods
 
     public void handleMediaControl(MediaControlMessage message) {
-        logger.info("Handling media control: {} for participant: {}",
-                message.getMediaType(), message.getParticipantId());
-
-        // Update session media state
-        Room room = roomService.getRoomEntityById(Long.parseLong(message.getRoomId()));
-        RoomSession session = getOrCreateSession(room);
-
         try {
-            String mediaState = objectMapper.writeValueAsString(message);
-            session.updateMediaState(message.getParticipantId(), mediaState);
-            sessionRepository.save(session);
-        } catch (JsonProcessingException e) {
-            logger.error("Failed to serialize media state", e);
+            logger.info("Handling media control: {} for participant: {} - enabled: {}",
+                    message.getMediaType(), message.getParticipantId(), message.isEnabled());
+
+            // Update session media state
+            try {
+                Room room = roomService.getRoomEntityById(Long.parseLong(message.getRoomId()));
+                RoomSession session = getOrCreateSession(room);
+
+                String mediaState = objectMapper.writeValueAsString(message);
+                session.updateMediaState(message.getParticipantId(), mediaState);
+                sessionRepository.save(session);
+            } catch (NumberFormatException e) {
+                logger.warn("Invalid room ID format: {}", message.getRoomId());
+            }
+
+            // Broadcast media control change to all participants
+            Map<String, Object> mediaNotification = Map.of(
+                    "type", "media-control-changed",
+                    "participantId", message.getParticipantId(),
+                    "mediaType", message.getMediaType().name().toLowerCase(),
+                    "enabled", message.isEnabled(),
+                    "streamId", message.getStreamId() != null ? message.getStreamId() : "",
+                    "timestamp", System.currentTimeMillis()
+            );
+
+            broadcastToRoom(message.getRoomId(), mediaNotification, null);
+
+        } catch (Exception e) {
+            logger.error("Error handling media control: {}", e.getMessage(), e);
         }
-
-        // Broadcast media control change
-        Map<String, Object> mediaNotification = Map.of(
-                "type", "media-control",
-                "participantId", message.getParticipantId(),
-                "mediaType", message.getMediaType().name(),
-                "enabled", message.isEnabled(),
-                "streamId", message.getStreamId() != null ? message.getStreamId() : ""
-        );
-
-        broadcastToRoom(message.getRoomId(), mediaNotification, null);
     }
 
     // Screen Sharing Methods
 
     public void handleScreenShare(ScreenShareMessage message) {
-        logger.info("Handling screen share: {} for participant: {}",
-                message.isSharing() ? "start" : "stop", message.getParticipantId());
+        try {
+            logger.info("Handling screen share: {} for participant: {} - sharing: {}",
+                    message.isSharing() ? "start" : "stop", message.getParticipantId(), message.isSharing());
 
-        Room room = roomService.getRoomEntityById(Long.parseLong(message.getRoomId()));
-        RoomSession session = getOrCreateSession(room);
+            try {
+                Room room = roomService.getRoomEntityById(Long.parseLong(message.getRoomId()));
+                RoomSession session = getOrCreateSession(room);
 
-        if (message.isSharing()) {
-            // Add to active screen shares
-            updateActiveScreenShares(session, message, true);
-        } else {
-            // Remove from active screen shares
-            updateActiveScreenShares(session, message, false);
+                if (message.isSharing()) {
+                    // Add to active screen shares
+                    updateActiveScreenShares(session, message, true);
+                } else {
+                    // Remove from active screen shares
+                    updateActiveScreenShares(session, message, false);
 
-            // If this was the pinned screen, unpin it
-            if (message.getParticipantId().equals(session.getPinnedScreenShare())) {
-                session.setPinnedScreenShare(null);
+                    // If this was the pinned screen, unpin it
+                    if (message.getParticipantId().equals(session.getPinnedScreenShare())) {
+                        session.setPinnedScreenShare(null);
+                    }
+                }
+
+                sessionRepository.save(session);
+            } catch (NumberFormatException e) {
+                logger.warn("Invalid room ID format: {}", message.getRoomId());
             }
+
+            // Broadcast screen share change to all participants
+            Map<String, Object> screenShareNotification = Map.of(
+                    "type", "screen-share-changed",
+                    "participantId", message.getParticipantId(),
+                    "streamId", message.getStreamId() != null ? message.getStreamId() : "",
+                    "isSharing", message.isSharing(),
+                    "isPinned", message.isPinned(),
+                    "screenTitle", message.getScreenTitle() != null ? message.getScreenTitle() : "",
+                    "timestamp", System.currentTimeMillis()
+            );
+
+            broadcastToRoom(message.getRoomId(), screenShareNotification, null);
+
+        } catch (Exception e) {
+            logger.error("Error handling screen share: {}", e.getMessage(), e);
         }
-
-        sessionRepository.save(session);
-
-        // Broadcast screen share change
-        Map<String, Object> screenShareNotification = Map.of(
-                "type", "screen-share-changed",
-                "participantId", message.getParticipantId(),
-                "streamId", message.getStreamId() != null ? message.getStreamId() : "",
-                "isSharing", message.isSharing(),
-                "isPinned", message.isPinned(),
-                "screenTitle", message.getScreenTitle() != null ? message.getScreenTitle() : ""
-        );
-
-        broadcastToRoom(message.getRoomId(), screenShareNotification, null);
     }
 
     public void pinScreenShare(String roomId, String participantId) {
-        Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
-        RoomSession session = getOrCreateSession(room);
+        try {
+            Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
+            RoomSession session = getOrCreateSession(room);
 
-        session.setPinnedScreenShare(participantId);
-        sessionRepository.save(session);
+            session.setPinnedScreenShare(participantId);
+            sessionRepository.save(session);
 
-        // Broadcast pin change
-        Map<String, Object> pinNotification = Map.of(
-                "type", "screen-pinned",
-                "pinnedParticipantId", participantId
-        );
+            // Broadcast pin change to all participants
+            Map<String, Object> pinNotification = Map.of(
+                    "type", "screen-pinned",
+                    "pinnedParticipantId", participantId,
+                    "timestamp", System.currentTimeMillis()
+            );
 
-        broadcastToRoom(roomId, pinNotification, null);
-        logger.info("Screen share pinned for participant {} in room {}", participantId, roomId);
+            broadcastToRoom(roomId, pinNotification, null);
+            logger.info("Screen share pinned for participant {} in room {}", participantId, roomId);
+
+        } catch (Exception e) {
+            logger.error("Error pinning screen share: {}", e.getMessage(), e);
+        }
     }
 
     public void unpinScreenShare(String roomId) {
-        Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
-        RoomSession session = getOrCreateSession(room);
+        try {
+            Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
+            RoomSession session = getOrCreateSession(room);
 
-        session.setPinnedScreenShare(null);
-        sessionRepository.save(session);
+            session.setPinnedScreenShare(null);
+            sessionRepository.save(session);
 
-        // Broadcast unpin change
-        Map<String, Object> unpinNotification = Map.of(
-                "type", "screen-unpinned"
-        );
+            // Broadcast unpin change to all participants
+            Map<String, Object> unpinNotification = Map.of(
+                    "type", "screen-unpinned",
+                    "timestamp", System.currentTimeMillis()
+            );
 
-        broadcastToRoom(roomId, unpinNotification, null);
-        logger.info("Screen share unpinned in room {}", roomId);
+            broadcastToRoom(roomId, unpinNotification, null);
+            logger.info("Screen share unpinned in room {}", roomId);
+
+        } catch (Exception e) {
+            logger.error("Error unpinning screen share: {}", e.getMessage(), e);
+        }
     }
 
     /**
      * Tracks a new screen share stream in the session
      */
     public void addScreenShare(String roomId, String participantId, String streamId, String screenTitle) {
-        Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
-        RoomSession session = getOrCreateSession(room);
-
         try {
+            Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
+            RoomSession session = getOrCreateSession(room);
+
             List<Map<String, Object>> activeShares = new ArrayList<>();
 
             // Parse existing screen shares
@@ -278,21 +372,22 @@ public class WebRTCSignalingService {
                     "type", "new-screen-share",
                     "participantId", participantId,
                     "streamId", streamId,
-                    "screenTitle", screenTitle
+                    "screenTitle", screenTitle,
+                    "timestamp", System.currentTimeMillis()
             );
 
             broadcastToRoom(roomId, notification, null);
 
-        } catch (JsonProcessingException e) {
-            logger.error("Failed to update active screen shares", e);
+        } catch (Exception e) {
+            logger.error("Failed to add screen share: {}", e.getMessage(), e);
         }
     }
 
     public void updateScreenShareInfo(String roomId, String participantId, String streamId, String screenTitle) {
-        Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
-        RoomSession session = getOrCreateSession(room);
-
         try {
+            Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
+            RoomSession session = getOrCreateSession(room);
+
             List<Map<String, Object>> activeShares = new ArrayList<>();
 
             // Parse existing screen shares
@@ -316,13 +411,14 @@ public class WebRTCSignalingService {
                     "type", "screen-share-updated",
                     "participantId", participantId,
                     "streamId", streamId,
-                    "screenTitle", screenTitle
+                    "screenTitle", screenTitle,
+                    "timestamp", System.currentTimeMillis()
             );
 
             broadcastToRoom(roomId, notification, null);
 
-        } catch (JsonProcessingException e) {
-            logger.error("Failed to update screen share info", e);
+        } catch (Exception e) {
+            logger.error("Failed to update screen share info: {}", e.getMessage(), e);
         }
     }
 
@@ -341,7 +437,7 @@ public class WebRTCSignalingService {
                 );
             }
         } catch (Exception e) {
-            logger.error("Failed to get active screen shares", e);
+            logger.error("Failed to get active screen shares: {}", e.getMessage(), e);
         }
 
         return new ArrayList<>();
@@ -367,10 +463,10 @@ public class WebRTCSignalingService {
                 }
             }
         } catch (Exception e) {
-            logger.error("Failed to get pinned screen share", e);
+            logger.error("Failed to get pinned screen share: {}", e.getMessage(), e);
         }
 
-        return Map.of();
+        return new HashMap<>();
     }
 
     // Session Management
@@ -391,72 +487,137 @@ public class WebRTCSignalingService {
     }
 
     public void endSession(String roomId) {
-        Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
-        Optional<RoomSession> sessionOpt = sessionRepository.findByRoomAndStatus(room, SessionStatus.ACTIVE);
+        try {
+            Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
+            Optional<RoomSession> sessionOpt = sessionRepository.findByRoomAndStatus(room, SessionStatus.ACTIVE);
 
-        if (sessionOpt.isPresent()) {
-            RoomSession session = sessionOpt.get();
-            session.setStatus(SessionStatus.ENDED);
-            session.setEndedAt(LocalDateTime.now());
-            sessionRepository.save(session);
+            if (sessionOpt.isPresent()) {
+                RoomSession session = sessionOpt.get();
+                session.setStatus(SessionStatus.ENDED);
+                session.setEndedAt(LocalDateTime.now());
+                sessionRepository.save(session);
 
-            // Clear in-memory tracking
-            roomParticipants.remove(roomId);
+                // Notify all participants that session is ending
+                Map<String, Object> sessionEndNotification = Map.of(
+                        "type", "session-ended",
+                        "roomId", roomId,
+                        "timestamp", System.currentTimeMillis()
+                );
+                broadcastToRoom(roomId, sessionEndNotification, null);
 
-            // Remove all participants from tracking
-            Set<String> participants = new HashSet<>(participantToRoom.keySet());
-            participants.forEach(pid -> {
-                if (roomId.equals(participantToRoom.get(pid))) {
-                    participantToRoom.remove(pid);
+                // Clear in-memory tracking
+                Set<String> participants = roomParticipants.remove(roomId);
+                if (participants != null) {
+                    participants.forEach(participantToRoom::remove);
+                    participants.forEach(participantInfo::remove);
                 }
-            });
 
-            logger.info("Session ended for room {}", roomId);
+                logger.info("Session ended for room {}. Cleared {} participants.", roomId,
+                        participants != null ? participants.size() : 0);
+            }
+        } catch (Exception e) {
+            logger.error("Error ending session for room {}: {}", roomId, e.getMessage(), e);
         }
     }
 
     // Utility Methods
 
-    private void sendToParticipant(String participantId, Object message) {
-        messagingTemplate.convertAndSendToUser(
-                participantId,
-                "/topic/webrtc-signal",
-                message
-        );
+    private void sendToParticipant(String participantId, String roomId, Object message) {
+        try {
+            // Send to user-specific destination
+            messagingTemplate.convertAndSendToUser(
+                    participantId,
+                    "/topic/webrtc/" + roomId + "/signal",
+                    message
+            );
+
+            // Also send to general room topic as fallback
+            messagingTemplate.convertAndSend(
+                    "/topic/webrtc/" + roomId + "/signal/" + participantId,
+                    message
+            );
+
+            logger.debug("Sent message to participant {}: {}", participantId, message.getClass().getSimpleName());
+        } catch (Exception e) {
+            logger.error("Error sending message to participant {}: {}", participantId, e.getMessage(), e);
+        }
     }
 
+    public void broadcastToRoom(String roomId, Object message, String excludeParticipantId) {
+        try {
+            // Send to room-wide topic
+            messagingTemplate.convertAndSend(
+                    "/topic/webrtc/" + roomId + "/signal",
+                    message
+            );
+
+            // Also send to individual participants
+            Set<String> participants = roomParticipants.get(roomId);
+            if (participants != null) {
+                participants.stream()
+                        .filter(pid -> excludeParticipantId == null || !pid.equals(excludeParticipantId))
+                        .forEach(pid -> {
+                            try {
+                                sendToParticipant(pid, roomId, message);
+                            } catch (Exception e) {
+                                logger.warn("Failed to send message to participant {}: {}", pid, e.getMessage());
+                            }
+                        });
+            }
+
+            logger.debug("Broadcasted message to room {}: {} (excluded: {})",
+                    roomId, message.getClass().getSimpleName(), excludeParticipantId);
+        } catch (Exception e) {
+            logger.error("Error broadcasting to room {}: {}", roomId, e.getMessage(), e);
+        }
+    }
 
     private void removeParticipantFromRoom(String participantId, String roomId) {
-        Set<String> participants = roomParticipants.get(roomId);
-        if (participants != null) {
-            participants.remove(participantId);
+        try {
+            Set<String> participants = roomParticipants.get(roomId);
+            if (participants != null) {
+                participants.remove(participantId);
 
-            // If room is empty, clean up
-            if (participants.isEmpty()) {
-                roomParticipants.remove(roomId);
+                // If room is empty, clean up
+                if (participants.isEmpty()) {
+                    roomParticipants.remove(roomId);
+                    logger.info("Room {} is now empty, removed from tracking", roomId);
+                }
             }
+
+            participantToRoom.remove(participantId);
+            participantInfo.remove(participantId);
+
+            // Update session
+            try {
+                Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
+                Optional<RoomSession> sessionOpt = sessionRepository.findByRoomAndStatus(room, SessionStatus.ACTIVE);
+                if (sessionOpt.isPresent()) {
+                    RoomSession session = sessionOpt.get();
+                    session.removeParticipant(participantId);
+                    sessionRepository.save(session);
+                }
+            } catch (NumberFormatException e) {
+                logger.warn("Invalid room ID format: {}", roomId);
+            }
+
+            // Notify other participants
+            Set<String> remainingParticipants = roomParticipants.get(roomId);
+            Map<String, Object> leaveNotification = Map.of(
+                    "type", "participant-left",
+                    "participantId", participantId,
+                    "roomId", roomId,
+                    "participants", remainingParticipants != null ? new ArrayList<>(remainingParticipants) : List.of(),
+                    "timestamp", System.currentTimeMillis()
+            );
+            broadcastToRoom(roomId, leaveNotification, null);
+
+            logger.info("Participant {} left room {}. Remaining participants: {}",
+                    participantId, roomId, remainingParticipants != null ? remainingParticipants.size() : 0);
+
+        } catch (Exception e) {
+            logger.error("Error removing participant {} from room {}: {}", participantId, roomId, e.getMessage(), e);
         }
-
-        participantToRoom.remove(participantId);
-
-        // Update session
-        Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
-        Optional<RoomSession> sessionOpt = sessionRepository.findByRoomAndStatus(room, SessionStatus.ACTIVE);
-        if (sessionOpt.isPresent()) {
-            RoomSession session = sessionOpt.get();
-            session.removeParticipant(participantId);
-            sessionRepository.save(session);
-        }
-
-        // Notify other participants
-        Map<String, Object> leaveNotification = Map.of(
-                "type", "participant-left",
-                "participantId", participantId,
-                "roomId", roomId
-        );
-        broadcastToRoom(roomId, leaveNotification, null);
-
-        logger.info("Participant {} left room {}", participantId, roomId);
     }
 
     @SuppressWarnings("unchecked")
@@ -487,35 +648,52 @@ public class WebRTCSignalingService {
 
             session.setActiveScreenShares(objectMapper.writeValueAsString(activeShares));
         } catch (JsonProcessingException e) {
-            logger.error("Failed to update active screen shares", e);
+            logger.error("Failed to update active screen shares: {}", e.getMessage(), e);
         }
     }
 
     // Get session info for frontend
     public Map<String, Object> getSessionInfo(String roomId) {
-        Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
-        Optional<RoomSession> sessionOpt = sessionRepository.findByRoomAndStatus(room, SessionStatus.ACTIVE);
+        try {
+            Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
+            Optional<RoomSession> sessionOpt = sessionRepository.findByRoomAndStatus(room, SessionStatus.ACTIVE);
 
-        if (sessionOpt.isPresent()) {
-            RoomSession session = sessionOpt.get();
+            Set<String> participants = roomParticipants.getOrDefault(roomId, Set.of());
+
+            if (sessionOpt.isPresent()) {
+                RoomSession session = sessionOpt.get();
+
+                return Map.of(
+                        "sessionId", session.getSessionId(),
+                        "status", session.getStatus().name(),
+                        "participants", new ArrayList<>(participants),
+                        "participantCount", participants.size(),
+                        "pinnedScreenShare", session.getPinnedScreenShare() != null ? session.getPinnedScreenShare() : "",
+                        "activeScreenShares", session.getActiveScreenShares() != null ? session.getActiveScreenShares() : "[]",
+                        "startedAt", session.getStartedAt() != null ? session.getStartedAt().toString() : ""
+                );
+            }
 
             return Map.of(
-                    "sessionId", session.getSessionId(),
-                    "status", session.getStatus().name(),
-                    "participants", roomParticipants.getOrDefault(roomId, Set.of()),
-                    "pinnedScreenShare", session.getPinnedScreenShare() != null ? session.getPinnedScreenShare() : "",
-                    "activeScreenShares", session.getActiveScreenShares() != null ? session.getActiveScreenShares() : "[]"
+                    "status", "NO_ACTIVE_SESSION",
+                    "participants", new ArrayList<>(participants),
+                    "participantCount", participants.size()
+            );
+
+        } catch (Exception e) {
+            logger.error("Error getting session info for room {}: {}", roomId, e.getMessage(), e);
+            return Map.of(
+                    "status", "ERROR",
+                    "error", e.getMessage()
             );
         }
-
-        return Map.of("status", "NO_ACTIVE_SESSION");
     }
 
     public void updateConnectionStatus(String roomId, String participantId, Map<String, Object> statusData) {
-        Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
-        RoomSession session = getOrCreateSession(room);
-
         try {
+            Room room = roomService.getRoomEntityById(Long.parseLong(roomId));
+            RoomSession session = getOrCreateSession(room);
+
             // Store connection status
             Map<String, Object> connectionInfo = new HashMap<>(statusData);
             connectionInfo.put("timestamp", System.currentTimeMillis());
@@ -526,27 +704,62 @@ public class WebRTCSignalingService {
 
             sessionRepository.save(session);
 
-            // Only broadcast to host and co-hosts for monitoring
+            // Broadcast connection status to room (for monitoring)
             Map<String, Object> notification = new HashMap<>();
             notification.put("type", "connection-status-update");
             notification.put("participantId", participantId);
             notification.put("status", statusData);
+            notification.put("timestamp", System.currentTimeMillis());
 
-            // Send only to hosts
-            String hostId = room.getHost().getEmail();
-            sendToParticipant(hostId, notification);
+            // Send to room for monitoring
+            broadcastToRoom(roomId, notification, participantId);
 
-        } catch (JsonProcessingException e) {
-            logger.error("Failed to update connection status", e);
+        } catch (Exception e) {
+            logger.error("Failed to update connection status: {}", e.getMessage(), e);
         }
     }
 
-    public void broadcastToRoom(String roomId, Object message, String excludeParticipantId) {
-        Set<String> participants = roomParticipants.get(roomId);
-        if (participants != null) {
-            participants.stream()
-                    .filter(pid -> !pid.equals(excludeParticipantId))
-                    .forEach(pid -> sendToParticipant(pid, message));
+    // Cleanup methods
+
+    public void cleanupInactiveParticipants() {
+        try {
+            long now = System.currentTimeMillis();
+            long timeout = 30000; // 30 seconds timeout
+
+            participantInfo.entrySet().removeIf(entry -> {
+                Map<String, Object> info = entry.getValue();
+                Long joinedAt = (Long) info.get("joinedAt");
+                if (joinedAt != null && (now - joinedAt) > timeout) {
+                    String participantId = entry.getKey();
+                    String roomId = participantToRoom.get(participantId);
+                    if (roomId != null) {
+                        removeParticipantFromRoom(participantId, roomId);
+                    }
+                    return true;
+                }
+                return false;
+            });
+
+        } catch (Exception e) {
+            logger.error("Error during cleanup: {}", e.getMessage(), e);
         }
+    }
+
+    // Getters for monitoring
+
+    public Map<String, Set<String>> getRoomParticipants() {
+        return new HashMap<>(roomParticipants);
+    }
+
+    public Map<String, String> getParticipantToRoomMapping() {
+        return new HashMap<>(participantToRoom);
+    }
+
+    public int getTotalActiveParticipants() {
+        return participantToRoom.size();
+    }
+
+    public int getTotalActiveRooms() {
+        return roomParticipants.size();
     }
 }

@@ -10,7 +10,6 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.messaging.handler.annotation.DestinationVariable;
 import org.springframework.messaging.handler.annotation.MessageMapping;
 import org.springframework.messaging.handler.annotation.Payload;
-import org.springframework.messaging.handler.annotation.SendTo;
 import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
 import org.springframework.messaging.simp.annotation.SubscribeMapping;
 import org.springframework.stereotype.Controller;
@@ -21,7 +20,7 @@ import java.util.Map;
 @Controller
 public class WebRTCSignalingController {
 
-    private static final Logger logger = LoggerFactory.getLogger(WebRTCSignalingController.class);
+    private static final Logger logger = LoggerFactory.getLogger(WebRTCController.class);
 
     @Autowired
     private WebRTCSignalingService signalingService;
@@ -403,15 +402,9 @@ public class WebRTCSignalingController {
             String status = (String) statusData.get("status");
             String participantId = principal != null ? principal.getName() : "anonymous";
 
-            // Broadcast connection status to other participants
-            Map<String, Object> statusNotification = Map.of(
-                    "type", "connection-status-update",
-                    "participantId", participantId,
-                    "status", status,
-                    "timestamp", System.currentTimeMillis()
-            );
+            // Update connection status via service
+            signalingService.updateConnectionStatus(roomId, participantId, statusData);
 
-            // You could send this to the signaling service for processing
             logger.debug("Connection status update from {} in room {}: {}",
                     participantId, roomId, status);
 
@@ -441,5 +434,4 @@ public class WebRTCSignalingController {
             logger.error("Error handling WebRTC error in room {}: {}", roomId, e.getMessage(), e);
         }
     }
-
 }

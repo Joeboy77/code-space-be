@@ -96,6 +96,12 @@
 			<scope>runtime</scope>
 		</dependency>
 
+		<dependency>
+			<groupId>org.springframework.security</groupId>
+			<artifactId>spring-security-messaging</artifactId>
+			<version>6.1.5</version>
+		</dependency>
+
 		<!-- Multi-Factor Authentication (MFA/TOTP) -->
 		<dependency>
 			<groupId>dev.samstevens.totp</groupId>
